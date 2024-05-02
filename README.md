@@ -41,6 +41,10 @@ python train.py --load_model "base_model/rwkv-16.pth"\
  --quant 1 \
  --quant_type 'nf4'
 ```
+## Merge to Base model
+```
+python merge_state.py <base_model.pth> <state_checkpoint.pth> <output.pth>
+```
 
 
 # And Thanks to:
