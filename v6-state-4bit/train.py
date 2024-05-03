@@ -77,6 +77,8 @@ if __name__ == "__main__":
     parser.add_argument("--quant",default=1,type=int) # Quant for Permanent Freezing Layers
     parser.add_argument("--quant_type",default='nf4',type=str) # Quant Method
 
+    parser.add_argument("--double_extra_dim",default=0,type=int)
+
     if pl.__version__[0]=='2':
         parser.add_argument("--accelerator", default="gpu", type=str)
         parser.add_argument("--strategy", default="auto", type=str)
