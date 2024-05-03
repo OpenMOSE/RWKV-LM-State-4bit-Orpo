@@ -39,7 +39,8 @@ python train.py --load_model "base_model/rwkv-16.pth"\
  --grad_cp 1 --my_testing "x060" \
  --strategy deepspeed_stage_1 \
  --quant 1 \
- --quant_type 'nf4'
+ --quant_type 'nf4' \
+ --double_extra_dim 0
 ```
 ## Merge to Base model
 ```
