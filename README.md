@@ -7,13 +7,14 @@ Test implement of RWKV v6 State-tuning with 4-bit quantization
 
 if quant is disabled, it operates in bf16 training mode.
 
-##2024.05.06 Update
+## 2024.05.06 Update
 1. Implemented Odds Ratio Preference Optimization(Orpo)
    - Orpo adds a penalty based on odds ratio to the usual loss method to tell apart preferred and less preferred response styles.
    - Refined Algorithm from RWKV-LM-LISA's Orpo
    - If you prepare datasets for Chosen and Negative, you can train intensely to provide desirable answers to questions.
    - Support gradient checkpointing. Compared to the old implementation of RWKV-LM-LISA's Orpo, it can reduce VRAM usage by up to 60%.
    - DPO Dataset Compatible
+![orpotype1loss](orpo.png)
 
 I have quantized the main weights of RWKV to 4 bits using Bitsandbytes and enabled State-Tuning. 
 
