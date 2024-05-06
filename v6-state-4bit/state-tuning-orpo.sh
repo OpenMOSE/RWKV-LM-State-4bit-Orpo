@@ -1,0 +1,20 @@
+python train.py --load_model "base_model/Anarchy-RWKV-2B-68.pth"\
+ --wandb "RWKV-LM-State-4bit Orpo 2B" --proj_dir "2BStateOrpo12" \
+ --data_file "default_text_document" --train_type "states" \
+ --data_type "binidx" --vocab_size 65536 --ctx_len 4096 \
+ --epoch_steps 1000 --epoch_count 1000 --epoch_begin 0 --epoch_save 1 \
+ --micro_bsz 1 --n_layer 32 --n_embd 2048 --weight_decay 0.000 \
+ --lr_init 1 --lr_final 0.01 \
+ --warmup_steps 100 --beta1 0.9 --beta2 0.999 --adam_eps 1e-8 \
+ --accelerator gpu --devices 1 --precision bf16 \
+ --grad_cp 1 --my_testing "x060" \
+ --strategy deepspeed_stage_1 \
+ --quant 1 \
+ --quant_type 'nf4' \
+ --double_extra_dim 0 \
+ --orpo 1 \
+ --orpo_alpha 0.0006 \
+ --rlhf_max_corpus_len 1024 \
+ --orpo_debug 0 \
+ --orpo_type 0 \
+ --rlhf_train_file orpotest.save \
