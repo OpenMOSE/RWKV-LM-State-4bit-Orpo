@@ -38,7 +38,6 @@ Ex. L61D4096 x060 14B can train on 24GB GPU!(15.3GB Use)
    - Tokenize using RWKV models
    - ```python PrepareOrpoDataset.py --load_model YOURMODEL --input_csv YOURCSV --output_save OUTPUTDEST --target_pair_count 1000 ```
 2. Run `train.py`:
-   - Configure LISA(its better select two layers from the final layer)
    - set --orpo 1 
    - set --orpo_alpha 0.0006 (coefficient while observing the balance between OddsRatio Loss and SFT Loss (e.g., 1:1))
    - set --rlhf_max_corpus_len 600 Maximum Token limit each prompt,chosen,reject for avoid OoM
