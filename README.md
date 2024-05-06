@@ -22,7 +22,7 @@ Additionally, I have configured the output checkpoint to only output time-state.
 
 Quantizing to 4 bits can reduce VRAM usage by about 40%.
 
-Ex. L32D2048 2B bf16 16GB to NF4 10GB
+Ex. L61D4096 x060 14B can train on 24GB GPU!(15.3GB Use)
 
 ## This repo works
    - 1. Freeze Main Weight
