@@ -19,10 +19,10 @@ if __name__ == "__main__":
     parser.add_argument("--wandb", default="", type=str)  # wandb project name. if "" then don't use wandb
     parser.add_argument("--proj_dir", default="out", type=str)
     parser.add_argument("--random_seed", default="-1", type=int)
-    parser.add_argument("--train_type", default="", type=str) # ""/"states"
+    parser.add_argument("--train_type", default="states", type=str) # ""/"states"
 
-    parser.add_argument("--data_file", default="", type=str)
-    parser.add_argument("--data_type", default="utf-8", type=str)
+    parser.add_argument("--data_file", default="default_text_document", type=str)
+    parser.add_argument("--data_type", default="binidx", type=str)
     parser.add_argument("--vocab_size", default=0, type=int)  # vocab_size = 0 means auto (for char-level LM and .txt data)
 
     parser.add_argument("--ctx_len", default=1024, type=int)
@@ -31,7 +31,7 @@ if __name__ == "__main__":
     parser.add_argument("--epoch_begin", default=0, type=int)  # if you load a model trained for x "epochs", set epoch_begin = x
     parser.add_argument("--epoch_save", default=5, type=int)  # save the model every [epoch_save] "epochs"
 
-    parser.add_argument("--micro_bsz", default=12, type=int)  # micro batch size (batch size per GPU)
+    parser.add_argument("--micro_bsz", default=1, type=int)  # micro batch size (batch size per GPU)
     parser.add_argument("--n_layer", default=6, type=int)
     parser.add_argument("--n_embd", default=512, type=int)
     parser.add_argument("--dim_att", default=0, type=int)
@@ -41,8 +41,8 @@ if __name__ == "__main__":
     parser.add_argument("--tiny_att_dim", default=0, type=int)  # tiny attention dim
     parser.add_argument("--tiny_att_layer", default=-999, type=int)  # tiny attention @ which layer
 
-    parser.add_argument("--lr_init", default=6e-4, type=float)  # 6e-4 for L12-D768, 4e-4 for L24-D1024, 3e-4 for L24-D2048
-    parser.add_argument("--lr_final", default=1e-5, type=float)
+    parser.add_argument("--lr_init", default=1, type=float)  # 6e-4 for L12-D768, 4e-4 for L24-D1024, 3e-4 for L24-D2048
+    parser.add_argument("--lr_final", default=0.01, type=float)
     parser.add_argument("--warmup_steps", default=-1, type=int)  # try 50 if you load a model
     parser.add_argument("--beta1", default=0.9, type=float)
     parser.add_argument("--beta2", default=0.99, type=float)  # use 0.999 when your model is close to convergence
@@ -79,6 +79,19 @@ if __name__ == "__main__":
 
     parser.add_argument("--double_extra_dim",default=0,type=int)
 
+    parser.add_argument("--dpo", default=0, type=int) 
+    parser.add_argument("--dpo_beta", default=0.01, type=float)
+
+    parser.add_argument("--orpo", default=0, type=int) #orpo
+    #parser.add_argument("--orpo_mysetting", default=1, type=int) #orpo
+    parser.add_argument("--orpo_alpha", default=0.0009, type=float) #orpo
+    parser.add_argument("--orpo_debug", default=0, type=int) #orpo
+    parser.add_argument("--orpo_type", default=1, type=int) #Orpo Type0 PaperImplement Type1 OpenMOSE Special
+
+    parser.add_argument("--rlhf_max_corpus_len", default=600, type=int) #limit maximum dpo dataset token per dpo item. if avoid OoM decrease this value
+    parser.add_argument("--rlhf_train_file", default="trainset.save", type=str)#need pytorch tensor type input 
+
+
     if pl.__version__[0]=='2':
         parser.add_argument("--accelerator", default="gpu", type=str)
         parser.add_argument("--strategy", default="auto", type=str)
@@ -89,6 +102,12 @@ if __name__ == "__main__":
     else:
         parser = Trainer.add_argparse_args(parser)
     args = parser.parse_args()
+
+    if args.dpo or args.orpo: #Align Tuning, currently not support grad_cp and multi batch
+        args.grad_cp = 0
+        args.micro_bsz = 1
+        #print("grad_cp automatic disabled")
+        print("micro_bsz = 1")
 
     ########################################################################################################
 
@@ -252,6 +271,9 @@ if __name__ == "__main__":
 
     from src.trainer import train_callback, generate_init_weight
     from src.dataset import MyDataset
+    from src.dpodataset import DPODataset
+    if args.dpo or args.orpo:
+        dpo_train_data = DPODataset(args)
 
     train_data = MyDataset(args)
     args.vocab_size = train_data.vocab_size
@@ -348,6 +370,27 @@ if __name__ == "__main__":
     # must set shuffle=False, persistent_workers=False (because worker is in another thread)
     data_loader = DataLoader(train_data, shuffle=False, pin_memory=True, batch_size=args.micro_bsz, num_workers=1, persistent_workers=False, drop_last=True)
 
+    if args.orpo:
+        if args.dpo == 1:
+            args.dpo = 0
+        print('################################################')
+        print("Odds Ratio Preference Optimization Mode Enabled.") 
+        print('################################################')
+        from pytorch_lightning.trainer.supporters import CombinedLoader
+        dpo_loader = DataLoader(dpo_train_data, shuffle=False, pin_memory=True, batch_size=args.micro_bsz, num_workers=1, persistent_workers=False, drop_last=True, collate_fn=lambda x:x)
+        combined_loader = CombinedLoader([data_loader, dpo_loader], "min_size")
+        trainer.fit(model, combined_loader)
+    if args.dpo:
+        print('################################################')
+        print("Direct Preference Optimization Mode Enabled.") 
+        print('################################################')
+        from pytorch_lightning.trainer.supporters import CombinedLoader
+        dpo_loader = DataLoader(dpo_train_data, shuffle=False, pin_memory=True, batch_size=args.micro_bsz, num_workers=1, persistent_workers=False, drop_last=True, collate_fn=lambda x:x)
+        combined_loader = CombinedLoader([data_loader, dpo_loader], "min_size")
+        trainer.fit(model, combined_loader)
+    else:
+        trainer.fit(model, data_loader)
+
     # if args.train_type == 'states':
     #     model.requires_grad_(False)
     #     for name, module in model.named_modules():
@@ -356,4 +399,4 @@ if __name__ == "__main__":
     #                 print(pname)
     #                 param.requires_grad = True
 
-    trainer.fit(model, data_loader)
+    #trainer.fit(model, data_loader)

@@ -139,11 +139,25 @@ class train_callback(pl.Callback):
             self.log("loss", trainer.my_epoch_loss, prog_bar=True, on_step=True)
             # self.log("s", real_step, prog_bar=True, on_step=True)
 
+            #if len(args.wandb) > 0:
+            #    lll = {"loss": trainer.my_loss, "lr": trainer.my_lr, "wd": trainer.my_wd, "Gtokens": real_step * token_per_step / 1e9}
+            #    if kt_s > 0:
+            #        lll["kt/s"] = kt_s
+            #    trainer.my_wandb.log(lll, step=int(real_step))
             if len(args.wandb) > 0:
                 lll = {"loss": trainer.my_loss, "lr": trainer.my_lr, "wd": trainer.my_wd, "Gtokens": real_step * token_per_step / 1e9}
                 if kt_s > 0:
                     lll["kt/s"] = kt_s
+                if args.dpo:
+                    try:
+                        lll |= {"pref_percentage": trainer.pref_match_percentage, "loss_1": trainer.loss_1_general_or_sft, "loss_2_dpo": trainer.loss_2_dpo}
+                    except: pass
+                if args.orpo:
+                    try:
+                        lll |= {"pref_percentage": trainer.pref_match_percentage, "loss_1_token_chosen": trainer.loss_1_general_or_sft, "loss_2_odds_ratio": trainer.loss_2_orpo}
+                    except: pass
                 trainer.my_wandb.log(lll, step=int(real_step))
+
         if (trainer.is_global_zero) or ('deepspeed_stage_3' in args.strategy): # save pth
             if args.magic_prime > 0:
                 expand_factor = 2 if args.my_qa_mask > 0 else 1
@@ -163,9 +177,20 @@ class train_callback(pl.Callback):
         else:
             dataset = trainer.train_dataloader.dataset.datasets
         assert "MyDataset" in str(dataset)
-        dataset.global_rank = trainer.global_rank
-        dataset.real_epoch = int(args.epoch_begin + trainer.current_epoch)
-        dataset.world_size = trainer.world_size
+        if args.dpo or args.orpo:
+            dataset[0].global_rank = trainer.global_rank
+            dataset[0].real_epoch = int(args.epoch_begin + trainer.current_epoch)
+            dataset[0].world_size = trainer.world_size
+            dataset[1].global_rank = trainer.global_rank
+            dataset[1].real_epoch = int(args.epoch_begin + trainer.current_epoch)
+            dataset[1].world_size = trainer.world_size
+        else:
+            dataset.global_rank = trainer.global_rank
+            dataset.real_epoch = int(args.epoch_begin + trainer.current_epoch)
+            dataset.world_size = trainer.world_size
+        #dataset.global_rank = trainer.global_rank
+        #dataset.real_epoch = int(args.epoch_begin + trainer.current_epoch)
+        #dataset.world_size = trainer.world_size
         # print(f'########## world_size {dataset.world_size} global_rank {dataset.global_rank} real_epoch {dataset.real_epoch} ##########')
 
     def on_train_epoch_end(self, trainer, pl_module):

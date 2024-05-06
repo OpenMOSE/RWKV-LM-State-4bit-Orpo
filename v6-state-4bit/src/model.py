@@ -4,6 +4,7 @@
 import functools
 import os, math, gc, importlib
 import torch
+from torch.nn.utils.rnn import pad_sequence
 # torch._C._jit_set_profiling_executor(True)
 # torch._C._jit_set_profiling_mode(True)
 import torch.nn as nn
@@ -1095,10 +1096,10 @@ class RWKV(pl.LightningModule):
             return cfg.get("offload_optimizer") or cfg.get("offload_param")
         return False
 
-    def forward(self, idx):
+    def forward(self, idx,checkpoint=False):
         args = self.args
         B, T = idx.size()
-        assert T <= args.ctx_len, "Cannot forward, model ctx_len is exhausted."
+        #assert T <= args.ctx_len, "Cannot forward, model ctx_len is exhausted."
 
         x = self.emb(idx)
         x_emb = x
@@ -1107,13 +1108,13 @@ class RWKV(pl.LightningModule):
             x = self.drop0(x)
         if args.tiny_att_dim > 0:
             for block in self.blocks:
-                if args.grad_cp == 1:
+                if checkpoint == True:
                     x = deepspeed.checkpointing.checkpoint(block, x, x_emb)
                 else:
                     x = block(x, x_emb)
         else:
             for block in self.blocks:
-                if args.grad_cp == 1:
+                if checkpoint == True:
                     x = deepspeed.checkpointing.checkpoint(block, x)
                 else:
                     x = block(x)
@@ -1138,12 +1139,132 @@ class RWKV(pl.LightningModule):
             x = self.head(x)
 
         return x
+    def compute_logps_simple(self, chosen_inputs, logits):
+        chosen_inputs = chosen_inputs[:, :-1]
+        log_probs = torch.log_softmax(logits[:, :-1, :], dim=2)
+        #print(log_probs)
+        gathered_log_probs = torch.gather(log_probs, dim=2, index=chosen_inputs[:, 1:].unsqueeze(-1)).squeeze(-1)
+        sequence_logps = gathered_log_probs.sum(dim=1) # im not sure correct or not
+        
+        return sequence_logps
 
     def training_step(self, batch, batch_idx):
         args = self.args
+
+        if args.orpo:
+            batch_general, batch_orpo = batch
+            idx, targets = batch_general
+
+            loss1 = 0.0
+            lossorpoonly = 0.0
+            
+            try: self.trainer.pref_match_percentage
+            except (NameError, AttributeError): self.trainer.pref_match_percentage = 0.5
+            pref_matches = 0
+            bsz = len(batch_orpo)
+            loss2 = 0.0
+
+            SFT_idx = []
+            SFT_targets = []
+            for s in range(bsz):
+                chosen_input,chosen_output,length_chosen,chosen_ref_prob, reject_input,reject_output,length_reject,reject_ref_prob = batch_orpo[s]
+
+                
+                # 両方のテンソルの長さを取得
+                len1 = chosen_input.size(0)
+                len2 = reject_input.size(0)
+
+                # 最大長を計算
+                max_len = max(len1, len2)
+
+                #if max_len < 512: GOMI CODE
+                #    max_len = 512 
+                chosen_output2 = chosen_output
+                reject_output2 = reject_output
+
+                # 長さが異なる場合、短いテンソルをパディング
+                if len1 < max_len:
+                    # len1がmax_lenになるようにパディングを追加 (右側にパディング)
+                    chosen_input = F.pad(chosen_input, (0, max_len - len1))
+                    chosen_output = F.pad(chosen_output, (0, max_len - len1))
+                elif len2 < max_len:
+                    # len2がmax_lenになるようにパディングを追加 (右側にパディング)
+                    reject_input = F.pad(reject_input, (0, max_len - len2))
+                    reject_output = F.pad(reject_output, (0, max_len - len2))
+
+                #print(f'chosen_input = {chosen_input.size(0)}')
+                #print(f'chosen_output = {chosen_output.size(0)}')
+                #print(f'reject_input = {reject_input.size(0)}')
+                #print(f'reject_output = {reject_output.size(0)}')
+                #print(f'chosen len={chosen_input.size(0)}  reject len={reject_input.size(0)}')
+                #SFT_idx.append(chosen_input)
+                #SFT_idx.append(reject_input)
+
+                SFT_idx = torch.cat([chosen_input.unsqueeze(0), reject_input.unsqueeze(0)], dim=0) # make batch with Chosen and Reject  
+
+                if args.grad_cp:
+                    RT = self(SFT_idx,checkpoint=True)
+                else:
+                    RT = self(SFT_idx,checkpoint=False)
+
+                #print(RT)
+                outputs_pos = RT[0].unsqueeze(0)
+                outputs_neg = RT[1].unsqueeze(0)
+
+                # Calculate Chosen Loss
+                l2_pos_loss = F.cross_entropy(outputs_pos.view(-1, outputs_pos.size(-1)), chosen_output.view(-1))
+
+                l2_pos_loss_temp = F.cross_entropy(outputs_pos.view(-1, outputs_pos.size(-1)), chosen_output.view(-1), reduction='none', ignore_index=0)
+                l2_neg_loss = F.cross_entropy(outputs_neg.view(-1, outputs_neg.size(-1)), reject_output.view(-1), reduction='none', ignore_index=0)
+
+                # Compute Probs pos and neg
+                pos_prob = -torch.sum(l2_pos_loss_temp[-length_chosen:])
+                neg_prob = -torch.sum(l2_neg_loss[-length_chosen:])
+
+                #below GOMI IDEA
+                #pos_prob = self.compute_logps_simple(chosen_output2.unsqueeze(0),outputs_pos)
+                #neg_prob = self.compute_logps_simple(reject_output2.unsqueeze(0),outputs_neg)
+
+                # Calculate log odds
+                orpo_ratio = (pos_prob - neg_prob) - (torch.log1p(-torch.exp(pos_prob)) - torch.log1p(-torch.exp(neg_prob)))
+                
+                pref_matches += (orpo_ratio > 0.01)
+
+                orpo_ratio = -F.logsigmoid(orpo_ratio*args.orpo_alpha)
+
+                if args.orpo_debug == 1:
+                    print(f'orpo_ratio={orpo_ratio}')
+
+                orpo_loss = torch.mean((l2_pos_loss+orpo_ratio)) #maybe no need torch.mean
+                loss1 = loss1 + l2_pos_loss
+                orpo_loss = L2Wrap.apply(orpo_loss, outputs_pos) #im not sure is this correct? outputs_pos or RT ? 
+
+                loss2 = loss2 + orpo_loss
+                lossorpoonly = lossorpoonly + orpo_ratio
+
+                #gc.collect()
+                #torch.cuda.empty_cache()
+               
+            loss2 = loss2 / bsz
+            loss1 = loss1 / bsz
+            lossorpoonly = lossorpoonly / bsz
+
+
+            self.trainer.loss_2_orpo = float(lossorpoonly)
+            self.trainer.loss_1_general_or_sft = float(loss1)
+            self.trainer.pref_match_percentage = 0.9 * self.trainer.pref_match_percentage + 0.1 * (pref_matches / bsz)
+
+            return loss2
+
+
+
+
         if args.my_qa_mask != 1:
             idx, targets = batch
-            logits = self(idx)
+            if args.grad_cp:
+                logits = self(idx,checkpoint=True)
+            else:
+                logits = self(idx,checkpoint=False)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
             # if '0' in os.environ["RWKV_MY_TESTING"]:
             #     print('logits', logits)
@@ -1156,8 +1277,10 @@ class RWKV(pl.LightningModule):
             sum_mask = torch.sum(mask).item()
             # if sum_mask == 0:
             #     return torch.tensor([0.0], requires_grad=True)
-
-            logits = self(idx)
+            if args.grad_cp:
+                logits = self(idx,checkpoint=True)
+            else:
+                logits = self(idx,checkpoint=False)
             if sum_mask == mask.shape[0]:
                 loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
                 # print('rank', self.global_rank, 'loss', loss.item())
