@@ -9,7 +9,6 @@ if quant is disabled, it operates in bf16 training mode.
 ## 2024.05.08 Update
    - Optimized VRAM Management on Orpo Training mode
    - Now, can train L61D4096 14B Orpo in ctx1024 @RTX4090! 
-1. VRAM Requirements of State-tuning with Orpo
 |   Model         | n_layer | dimention  | VRAM ctx1024 |
 | --------- | ---- | ---- | ---- |
 | RWKV x060-14B | 61 | 4096 | 16.8 GB |
