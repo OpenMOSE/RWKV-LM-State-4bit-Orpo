@@ -103,11 +103,11 @@ if __name__ == "__main__":
         parser = Trainer.add_argparse_args(parser)
     args = parser.parse_args()
 
-    if args.dpo or args.orpo: #Align Tuning, currently not support grad_cp and multi batch
-        args.grad_cp = 0
-        args.micro_bsz = 1
-        #print("grad_cp automatic disabled")
-        print("micro_bsz = 1")
+    #if args.dpo or args.orpo: #Align Tuning, currently not support grad_cp and multi batch
+    #    #args.grad_cp = 0
+    #    args.micro_bsz = 1
+    #    #print("grad_cp automatic disabled")
+    #    print("micro_bsz = 1")
 
     ########################################################################################################
 
@@ -286,9 +286,14 @@ if __name__ == "__main__":
         #if 'time_state' in name:
         #    param.requires_grad = True
         #    print(f'grad enable {name}')
-        if '.receptance' in name or '.key' in name or '.value' in name or '.output' in name or '.gate' in name  or 'head' in name:
-            param.requires_grad = False
-            print(f'grad Disabled {name}')
+        if args.orpo:
+            if '.receptance' in name or '.key' in name or '.value' in name or '.output' in name or '.gate' in name  or 'head' in name  or 'ln_x' in name or 'ln' in name or 'time_m' in name:
+                param.requires_grad = False
+                print(f'grad Disabled {name}')
+        else:
+            if '.receptance' in name or '.key' in name or '.value' in name or '.output' in name or '.gate' in name  or 'head' in name:# or 'time_m' in name:
+                param.requires_grad = False
+                print(f'grad Disabled {name}')
 
 
 
@@ -368,8 +373,7 @@ if __name__ == "__main__":
         trainer.strategy.config["zero_optimization"]["reduce_bucket_size"] = args.ds_bucket_mb * 1000 * 1000
 
     # must set shuffle=False, persistent_workers=False (because worker is in another thread)
-    data_loader = DataLoader(train_data, shuffle=False, pin_memory=True, batch_size=args.micro_bsz, num_workers=1, persistent_workers=False, drop_last=True)
-
+    
     if args.orpo:
         if args.dpo == 1:
             args.dpo = 0
@@ -378,8 +382,8 @@ if __name__ == "__main__":
         print('################################################')
         from pytorch_lightning.trainer.supporters import CombinedLoader
         dpo_loader = DataLoader(dpo_train_data, shuffle=False, pin_memory=True, batch_size=args.micro_bsz, num_workers=1, persistent_workers=False, drop_last=True, collate_fn=lambda x:x)
-        combined_loader = CombinedLoader([data_loader, dpo_loader], "min_size")
-        trainer.fit(model, combined_loader)
+        #combined_loader = CombinedLoader([data_loader, dpo_loader], "min_size")
+        trainer.fit(model, dpo_loader)
     if args.dpo:
         print('################################################')
         print("Direct Preference Optimization Mode Enabled.") 
@@ -389,6 +393,7 @@ if __name__ == "__main__":
         combined_loader = CombinedLoader([data_loader, dpo_loader], "min_size")
         trainer.fit(model, combined_loader)
     else:
+        data_loader = DataLoader(train_data, shuffle=False, pin_memory=True, batch_size=args.micro_bsz, num_workers=1, persistent_workers=False, drop_last=True)
         trainer.fit(model, data_loader)
 
     # if args.train_type == 'states':

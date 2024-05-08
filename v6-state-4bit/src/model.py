@@ -1147,13 +1147,26 @@ class RWKV(pl.LightningModule):
         sequence_logps = gathered_log_probs.sum(dim=1) # im not sure correct or not
         
         return sequence_logps
+    def tensor_memory_size(self,tensor):
+        # テンソルの要素数を取得
+        num_elements = tensor.numel()
+        # テンソルのデータ型に基づいて、一つの要素あたりのバイト数を取得
+        element_size = tensor.element_size()
+        # メモリ使用量を計算（バイト単位）
+        memory_bytes = num_elements * element_size
+        
+        # メガバイト単位で表示
+        memory_mb = memory_bytes / (1024 ** 2)
+        return memory_mb
 
     def training_step(self, batch, batch_idx):
         args = self.args
 
+
+
         if args.orpo:
-            batch_general, batch_orpo = batch
-            idx, targets = batch_general
+            batch_orpo = batch
+            #idx, targets = batch_general
 
             loss1 = 0.0
             lossorpoonly = 0.0
@@ -1164,8 +1177,8 @@ class RWKV(pl.LightningModule):
             bsz = len(batch_orpo)
             loss2 = 0.0
 
-            SFT_idx = []
-            SFT_targets = []
+            
+            #SFT_targets = []
             for s in range(bsz):
                 chosen_input,chosen_output,length_chosen,chosen_ref_prob, reject_input,reject_output,length_reject,reject_ref_prob = batch_orpo[s]
 
@@ -1192,6 +1205,9 @@ class RWKV(pl.LightningModule):
                     reject_input = F.pad(reject_input, (0, max_len - len2))
                     reject_output = F.pad(reject_output, (0, max_len - len2))
 
+                #print(f'VRAM chosen_input = {self.tensor_memory_size(chosen_input)} mbytes')
+                #print(f'VRAM chosen_output = {self.tensor_memory_size(chosen_output)} mbytes')
+
                 #print(f'chosen_input = {chosen_input.size(0)}')
                 #print(f'chosen_output = {chosen_output.size(0)}')
                 #print(f'reject_input = {reject_input.size(0)}')
@@ -1199,7 +1215,7 @@ class RWKV(pl.LightningModule):
                 #print(f'chosen len={chosen_input.size(0)}  reject len={reject_input.size(0)}')
                 #SFT_idx.append(chosen_input)
                 #SFT_idx.append(reject_input)
-
+                SFT_idx = []
                 SFT_idx = torch.cat([chosen_input.unsqueeze(0), reject_input.unsqueeze(0)], dim=0) # make batch with Chosen and Reject  
 
                 if args.grad_cp:
@@ -1211,6 +1227,12 @@ class RWKV(pl.LightningModule):
                 outputs_pos = RT[0].unsqueeze(0)
                 outputs_neg = RT[1].unsqueeze(0)
 
+                del RT
+                del SFT_idx
+                #gc.collect()
+                #torch.cuda.empty_cache()
+
+
                 # Calculate Chosen Loss
                 l2_pos_loss = F.cross_entropy(outputs_pos.view(-1, outputs_pos.size(-1)), chosen_output.view(-1))
 
@@ -1219,7 +1241,10 @@ class RWKV(pl.LightningModule):
 
                 # Compute Probs pos and neg
                 pos_prob = -torch.sum(l2_pos_loss_temp[-length_chosen:])
+                del l2_pos_loss_temp
                 neg_prob = -torch.sum(l2_neg_loss[-length_chosen:])
+                del l2_neg_loss
+
 
                 #below GOMI IDEA
                 #pos_prob = self.compute_logps_simple(chosen_output2.unsqueeze(0),outputs_pos)
@@ -1235,6 +1260,7 @@ class RWKV(pl.LightningModule):
                 if args.orpo_debug == 1:
                     print(f'orpo_ratio={orpo_ratio}')
 
+
                 orpo_loss = torch.mean((l2_pos_loss+orpo_ratio)) #maybe no need torch.mean
                 loss1 = loss1 + l2_pos_loss
                 orpo_loss = L2Wrap.apply(orpo_loss, outputs_pos) #im not sure is this correct? outputs_pos or RT ? 
@@ -1242,8 +1268,6 @@ class RWKV(pl.LightningModule):
                 loss2 = loss2 + orpo_loss
                 lossorpoonly = lossorpoonly + orpo_ratio
 
-                #gc.collect()
-                #torch.cuda.empty_cache()
                
             loss2 = loss2 / bsz
             loss1 = loss1 / bsz
