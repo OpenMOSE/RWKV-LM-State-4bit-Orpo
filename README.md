@@ -6,7 +6,16 @@ This repo is forked from RWKV-LM
 Test implement of RWKV v6 State-tuning with 4-bit quantization
 
 if quant is disabled, it operates in bf16 training mode.
-
+## 2024.05.08 Update
+   - Optimized VRAM Management on Orpo Training mode
+   - Now, can train L61D4096 14B Orpo in ctx1024 @RTX4090! 
+1. VRAM Requirements of State-tuning with Orpo
+|   Model         | n_layer | dimention  | VRAM ctx1024 |
+| --------- | ---- | ---- | ---- |
+| RWKV x060-14B | 61 | 4096 | 16.8 GB |
+| RWKV x060-7B  | 32 | 4096 | 11.6 GB |
+| RWKV x060-3B  | 32 | 2560 | 7.7 GB  |
+| RWKV x060-2B  | 32 | 2048 | 7.0 GB  |
 ## 2024.05.06 Update
 1. Implemented Odds Ratio Preference Optimization(Orpo)
    - Orpo adds a penalty based on odds ratio to the usual loss method to tell apart preferred and less preferred response styles.
