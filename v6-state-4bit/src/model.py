@@ -1187,10 +1187,13 @@ class RWKV(pl.LightningModule):
                 len1 = chosen_input.size(0)
                 len2 = reject_input.size(0)
 
+                #print(f'len1 = {len1}')
+                #print(f'len2 = {len2}')
+
                 # 最大長を計算
                 max_len = max(len1, len2)
 
-                #if max_len < 512: GOMI CODE
+                #if max_len < 512:# GOMI CODE
                 #    max_len = 512 
                 chosen_output2 = chosen_output
                 reject_output2 = reject_output
@@ -1200,7 +1203,7 @@ class RWKV(pl.LightningModule):
                     # len1がmax_lenになるようにパディングを追加 (右側にパディング)
                     chosen_input = F.pad(chosen_input, (0, max_len - len1))
                     chosen_output = F.pad(chosen_output, (0, max_len - len1))
-                elif len2 < max_len:
+                if len2 < max_len:
                     # len2がmax_lenになるようにパディングを追加 (右側にパディング)
                     reject_input = F.pad(reject_input, (0, max_len - len2))
                     reject_output = F.pad(reject_output, (0, max_len - len2))
@@ -1227,7 +1230,7 @@ class RWKV(pl.LightningModule):
                 outputs_pos = RT[0].unsqueeze(0)
                 outputs_neg = RT[1].unsqueeze(0)
 
-                del RT
+                #del RT
                 del SFT_idx
                 #gc.collect()
                 #torch.cuda.empty_cache()
@@ -1236,34 +1239,47 @@ class RWKV(pl.LightningModule):
                 # Calculate Chosen Loss
                 l2_pos_loss = F.cross_entropy(outputs_pos.view(-1, outputs_pos.size(-1)), chosen_output.view(-1))
 
-                l2_pos_loss_temp = F.cross_entropy(outputs_pos.view(-1, outputs_pos.size(-1)), chosen_output.view(-1), reduction='none', ignore_index=0)
-                l2_neg_loss = F.cross_entropy(outputs_neg.view(-1, outputs_neg.size(-1)), reject_output.view(-1), reduction='none', ignore_index=0)
+                #l2_pos_loss_temp = F.cross_entropy(outputs_pos.view(-1, outputs_pos.size(-1)), chosen_output.view(-1), reduction='none', ignore_index=0)
+                #l2_neg_loss = F.cross_entropy(outputs_neg.view(-1, outputs_neg.size(-1)), reject_output.view(-1), reduction='none', ignore_index=0)
 
                 # Compute Probs pos and neg
-                pos_prob = -torch.sum(l2_pos_loss_temp[-length_chosen:])
-                del l2_pos_loss_temp
-                neg_prob = -torch.sum(l2_neg_loss[-length_chosen:])
-                del l2_neg_loss
+                #pos_prob = -torch.sum(l2_pos_loss_temp[-length_chosen:])
+                #del l2_pos_loss_temp
+                #neg_prob = -torch.sum(l2_neg_loss[-length_chosen:])
+                #del l2_neg_loss
 
 
                 #below GOMI IDEA
-                #pos_prob = self.compute_logps_simple(chosen_output2.unsqueeze(0),outputs_pos)
-                #neg_prob = self.compute_logps_simple(reject_output2.unsqueeze(0),outputs_neg)
+                pos_prob = self.compute_logps_simple(chosen_output2.unsqueeze(0),outputs_pos)
+                neg_prob = self.compute_logps_simple(reject_output2.unsqueeze(0),outputs_neg)
+
+                #print(f'pos_prob={pos_prob}')
+                #print(f'neg_prob={neg_prob}')
 
                 # Calculate log odds
                 orpo_ratio = (pos_prob - neg_prob) - (torch.log1p(-torch.exp(pos_prob)) - torch.log1p(-torch.exp(neg_prob)))
                 
-                pref_matches += (orpo_ratio > 0.01)
+                pref_matches += (orpo_ratio > 0)
 
-                orpo_ratio = -F.logsigmoid(orpo_ratio*args.orpo_alpha)
+                orpo_ratio = -F.logsigmoid(orpo_ratio)*args.orpo_alpha
 
                 if args.orpo_debug == 1:
                     print(f'orpo_ratio={orpo_ratio}')
+                
+                if torch.isnan(l2_pos_loss).any():
+                    print('l2_pos_loss is NaN...')
+
+                if torch.isnan(orpo_ratio).any():
+                    print('orpo_ratio is NaN...')
+                    orpo_ratio = torch.tensor(0.0, device=orpo_ratio.device)
+                
 
 
                 orpo_loss = torch.mean((l2_pos_loss+orpo_ratio)) #maybe no need torch.mean
                 loss1 = loss1 + l2_pos_loss
-                orpo_loss = L2Wrap.apply(orpo_loss, outputs_pos) #im not sure is this correct? outputs_pos or RT ? 
+               # if torch.isnan(orpo_loss).any():
+               #     orpo_loss = torch.tensor(0.0, device=orpo_loss.device)
+                orpo_loss = L2Wrap.apply(orpo_loss, RT) #im not sure is this correct? outputs_pos or RT ? 
 
                 loss2 = loss2 + orpo_loss
                 lossorpoonly = lossorpoonly + orpo_ratio
