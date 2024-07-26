@@ -6,6 +6,10 @@ This repo is forked from RWKV-LM
 Test implement of RWKV v6 State-tuning with 4-bit quantization
 
 if quant is disabled, it operates in bf16 training mode.
+## 2024.07.27 Update
+   - Fixed Orpo algorithm.(about prob and mask)
+   - Stream model loading
+
 ## 2024.05.08 Update
    - Optimized VRAM Management on Orpo Training mode
    - Now, can train L61D4096 14B Orpo in ctx1024 @RTX4090! 
