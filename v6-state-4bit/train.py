@@ -314,7 +314,7 @@ if __name__ == "__main__":
 
     rank_zero_info(f"########## Loading {args.load_model}... ##########")
     try:
-        load_dict = torch.load(args.load_model, map_location="cpu")
+        load_dict = torch.load(args.load_model, map_location="cpu", mmap=True)
         load_keys = list(load_dict.keys())
         for k in load_keys:
             if k.startswith('_forward_module.'):

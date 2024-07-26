@@ -1145,8 +1145,65 @@ class RWKV(pl.LightningModule):
         #print(log_probs)
         gathered_log_probs = torch.gather(log_probs, dim=2, index=chosen_inputs[:, 1:].unsqueeze(-1)).squeeze(-1)
         sequence_logps = gathered_log_probs.sum(dim=1) # im not sure correct or not
-        
         return sequence_logps
+    def compute_logps_simple_mask2(self, chosen_inputs, logits, attention_mask=None):
+        chosen_inputs = chosen_inputs[:, :-1]
+        log_probs = torch.log_softmax(logits[:, :-1, :], dim=2)
+        
+        # Gather log probabilities
+        gathered_log_probs = torch.gather(log_probs, dim=2, index=chosen_inputs[:, 1:].unsqueeze(-1)).squeeze(-1)
+        
+        # If attention_mask is not provided, create a mask of all ones
+        if attention_mask is None:
+            attention_mask = torch.ones_like(chosen_inputs[:, 1:])
+        else:
+            attention_mask = attention_mask[:, 1:]  # Shift mask to align with gathered_log_probs
+        
+        # Apply mask to log probabilities
+        masked_log_probs = gathered_log_probs * attention_mask
+        
+        # Compute sequence log probabilities
+        sequence_logps = masked_log_probs.sum(dim=1)
+        
+        # Compute effective sequence lengths (sum of attention mask)
+        effective_lengths = attention_mask.sum(dim=1)
+        
+        # Normalize log probabilities by effective sequence length
+        normalized_sequence_logps = sequence_logps / effective_lengths
+
+        return normalized_sequence_logps
+    def compute_logps_simple_mask(self, chosen_inputs, logits, attention_mask=None):
+        #chosen_inputs = chosen_inputs[:, :-1]
+        log_probs = torch.log_softmax(logits[:, :-1, :], dim=2)
+        
+        # Gather log probabilities
+        gathered_log_probs = torch.gather(log_probs, dim=2, index=chosen_inputs[:, 1:].unsqueeze(-1)).squeeze(-1)
+        
+        # If attention_mask is not provided, create a mask of all ones
+        #if attention_mask is None:
+        #    attention_mask = torch.ones_like(chosen_inputs[:, 1:])
+        #else:
+        #    # Ensure attention_mask has the same shape as gathered_log_probs
+        #    attention_mask = attention_mask.unsqueeze(0)  # Add batch dimension if not present
+        #    attention_mask = attention_mask[:, :-1]  # Remove last element to align with gathered_log_probs
+        if attention_mask is not None:
+            attention_mask = attention_mask[:, :-1]
+        else:
+            attention_mask = torch.ones_like(gathered_log_probs)
+        
+        # Apply mask to log probabilities
+        masked_log_probs = gathered_log_probs * attention_mask
+        
+        # Compute sequence log probabilities
+        sequence_logps = masked_log_probs.sum(dim=1)
+        
+        # Compute effective sequence lengths (sum of attention mask)
+        effective_lengths = attention_mask.sum(dim=1)
+        
+        # Normalize log probabilities by effective sequence length
+        normalized_sequence_logps = sequence_logps / effective_lengths
+
+        return normalized_sequence_logps
     def tensor_memory_size(self,tensor):
         # テンソルの要素数を取得
         num_elements = tensor.numel()
@@ -1182,6 +1239,10 @@ class RWKV(pl.LightningModule):
             for s in range(bsz):
                 chosen_input,chosen_output,length_chosen,chosen_ref_prob, reject_input,reject_output,length_reject,reject_ref_prob = batch_orpo[s]
 
+                # マスクの作成
+                chosen_mask = (chosen_output != 0).float()  # パディングは0と仮定
+                reject_mask = (reject_output != 0).float()
+
                 
                 # 両方のテンソルの長さを取得
                 len1 = chosen_input.size(0)
@@ -1203,10 +1264,12 @@ class RWKV(pl.LightningModule):
                     # len1がmax_lenになるようにパディングを追加 (右側にパディング)
                     chosen_input = F.pad(chosen_input, (0, max_len - len1))
                     chosen_output = F.pad(chosen_output, (0, max_len - len1))
+                    chosen_mask = F.pad(chosen_mask, (0, max_len - len1))
                 if len2 < max_len:
                     # len2がmax_lenになるようにパディングを追加 (右側にパディング)
                     reject_input = F.pad(reject_input, (0, max_len - len2))
                     reject_output = F.pad(reject_output, (0, max_len - len2))
+                    reject_mask = F.pad(reject_mask, (0, max_len - len2))
 
                 #print(f'VRAM chosen_input = {self.tensor_memory_size(chosen_input)} mbytes')
                 #print(f'VRAM chosen_output = {self.tensor_memory_size(chosen_output)} mbytes')
@@ -1234,10 +1297,16 @@ class RWKV(pl.LightningModule):
                 del SFT_idx
                 #gc.collect()
                 #torch.cuda.empty_cache()
+                # マスクされたロス計算
+                def masked_cross_entropy(pred, target, mask):
+                    loss = F.cross_entropy(pred.view(-1, pred.size(-1)), target.view(-1), reduction='none')
+                    loss = loss * mask.view(-1)
+                    return loss.sum() / mask.sum()
 
 
                 # Calculate Chosen Loss
-                l2_pos_loss = F.cross_entropy(outputs_pos.view(-1, outputs_pos.size(-1)), chosen_output.view(-1))
+                #l2_pos_loss = F.cross_entropy(outputs_pos.view(-1, outputs_pos.size(-1)), chosen_output.view(-1))
+                l2_pos_loss = masked_cross_entropy(outputs_pos,chosen_output,chosen_mask)
 
                 #l2_pos_loss_temp = F.cross_entropy(outputs_pos.view(-1, outputs_pos.size(-1)), chosen_output.view(-1), reduction='none', ignore_index=0)
                 #l2_neg_loss = F.cross_entropy(outputs_neg.view(-1, outputs_neg.size(-1)), reject_output.view(-1), reduction='none', ignore_index=0)
@@ -1250,8 +1319,11 @@ class RWKV(pl.LightningModule):
 
 
                 #below GOMI IDEA
-                pos_prob = self.compute_logps_simple(chosen_output2.unsqueeze(0),outputs_pos)
-                neg_prob = self.compute_logps_simple(reject_output2.unsqueeze(0),outputs_neg)
+                #print(f'chosen_output = {chosen_output.size(0)}')
+                #print(f'outputs_pos = {outputs_pos.size(0)}')
+                #print(f'chosen_mask = {chosen_mask}')
+                pos_prob = self.compute_logps_simple_mask(chosen_output.unsqueeze(0),outputs_pos,chosen_mask.unsqueeze(0))
+                neg_prob = self.compute_logps_simple_mask(reject_output.unsqueeze(0),outputs_neg,reject_mask.unsqueeze(0))
 
                 #print(f'pos_prob={pos_prob}')
                 #print(f'neg_prob={neg_prob}')
@@ -1261,7 +1333,17 @@ class RWKV(pl.LightningModule):
                 
                 pref_matches += (orpo_ratio > 0)
 
-                orpo_ratio = -F.logsigmoid(orpo_ratio)*args.orpo_alpha
+                #orpo_ratio = -F.logsigmoid(orpo_ratio)*args.orpo_alpha
+                orpo_ratio = F.logsigmoid(orpo_ratio)
+
+                #orpo_ratio = torch.log(orpo_ratio)
+
+                orpo_ratio = -orpo_ratio*args.orpo_alpha
+
+
+
+                #*args.orpo_alpha
+
 
                 if args.orpo_debug == 1:
                     print(f'orpo_ratio={orpo_ratio}')
@@ -1275,7 +1357,7 @@ class RWKV(pl.LightningModule):
                 
 
 
-                orpo_loss = torch.mean((l2_pos_loss+orpo_ratio)) #maybe no need torch.mean
+                orpo_loss = torch.mean(((l2_pos_loss*(1.0-args.orpo_alpha))+orpo_ratio)) #maybe no need torch.mean
                 loss1 = loss1 + l2_pos_loss
                # if torch.isnan(orpo_loss).any():
                #     orpo_loss = torch.tensor(0.0, device=orpo_loss.device)
