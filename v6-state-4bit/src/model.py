@@ -12,6 +12,7 @@ from torch.nn import functional as F
 import pytorch_lightning as pl
 from pytorch_lightning.utilities import rank_zero_info, rank_zero_only
 from pytorch_lightning.strategies import DeepSpeedStrategy
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
 if importlib.util.find_spec('deepspeed'):
     import deepspeed
     from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
@@ -1109,13 +1110,15 @@ class RWKV(pl.LightningModule):
         if args.tiny_att_dim > 0:
             for block in self.blocks:
                 if checkpoint == True:
-                    x = deepspeed.checkpointing.checkpoint(block, x, x_emb)
+                    #x = deepspeed.checkpointing.checkpoint(block, x, x_emb)
+                    x = torch_checkpoint(block, x, x_emb, use_reentrant=False)
                 else:
                     x = block(x, x_emb)
         else:
             for block in self.blocks:
                 if checkpoint == True:
-                    x = deepspeed.checkpointing.checkpoint(block, x)
+                    #x = deepspeed.checkpointing.checkpoint(block, x)
+                    x = torch_checkpoint(block, x, x_emb, use_reentrant=False)
                 else:
                     x = block(x)
 
@@ -1224,6 +1227,10 @@ class RWKV(pl.LightningModule):
         if args.orpo:
             batch_orpo = batch
             #idx, targets = batch_general
+            def masked_cross_entropy(pred, target, mask):
+                    loss = F.cross_entropy(pred.view(-1, pred.size(-1)), target.view(-1), reduction='none')
+                    loss = loss * mask.view(-1)
+                    return loss.sum() / mask.sum()
 
             loss1 = 0.0
             lossorpoonly = 0.0
@@ -1239,132 +1246,127 @@ class RWKV(pl.LightningModule):
             for s in range(bsz):
                 chosen_input,chosen_output,length_chosen,chosen_ref_prob, reject_input,reject_output,length_reject,reject_ref_prob = batch_orpo[s]
 
-                # マスクの作成
-                chosen_mask = (chosen_output != 0).float()  # パディングは0と仮定
-                reject_mask = (reject_output != 0).float()
+                if length_reject > (1 + 3): #if have reject 
 
-                
-                # 両方のテンソルの長さを取得
-                len1 = chosen_input.size(0)
-                len2 = reject_input.size(0)
+                    # マスクの作成
+                    chosen_mask = (chosen_output != 0).float()  # パディングは0と仮定
+                    reject_mask = (reject_output != 0).float()
 
-                #print(f'len1 = {len1}')
-                #print(f'len2 = {len2}')
+                    # 両方のテンソルの長さを取得
+                    len1 = chosen_input.size(0)
+                    len2 = reject_input.size(0)
 
-                # 最大長を計算
-                max_len = max(len1, len2)
+                    #print(f'len1 = {len1}')
+                    #print(f'len2 = {len2}')
 
-                #if max_len < 512:# GOMI CODE
-                #    max_len = 512 
-                chosen_output2 = chosen_output
-                reject_output2 = reject_output
+                    # 最大長を計算
+                    max_len = max(len1, len2)
 
-                # 長さが異なる場合、短いテンソルをパディング
-                if len1 < max_len:
-                    # len1がmax_lenになるようにパディングを追加 (右側にパディング)
-                    chosen_input = F.pad(chosen_input, (0, max_len - len1))
-                    chosen_output = F.pad(chosen_output, (0, max_len - len1))
-                    chosen_mask = F.pad(chosen_mask, (0, max_len - len1))
-                if len2 < max_len:
-                    # len2がmax_lenになるようにパディングを追加 (右側にパディング)
-                    reject_input = F.pad(reject_input, (0, max_len - len2))
-                    reject_output = F.pad(reject_output, (0, max_len - len2))
-                    reject_mask = F.pad(reject_mask, (0, max_len - len2))
+                    #if max_len < 512:# GOMI CODE
+                    #    max_len = 512 
+                    chosen_output2 = chosen_output
+                    reject_output2 = reject_output
 
-                #print(f'VRAM chosen_input = {self.tensor_memory_size(chosen_input)} mbytes')
-                #print(f'VRAM chosen_output = {self.tensor_memory_size(chosen_output)} mbytes')
+                    # 長さが異なる場合、短いテンソルをパディング
+                    if len1 < max_len:
+                        # len1がmax_lenになるようにパディングを追加 (右側にパディング)
+                        chosen_input = F.pad(chosen_input, (0, max_len - len1))
+                        chosen_output = F.pad(chosen_output, (0, max_len - len1))
+                        chosen_mask = F.pad(chosen_mask, (0, max_len - len1))
+                    if len2 < max_len:
+                        # len2がmax_lenになるようにパディングを追加 (右側にパディング)
+                        reject_input = F.pad(reject_input, (0, max_len - len2))
+                        reject_output = F.pad(reject_output, (0, max_len - len2))
+                        reject_mask = F.pad(reject_mask, (0, max_len - len2))
 
-                #print(f'chosen_input = {chosen_input.size(0)}')
-                #print(f'chosen_output = {chosen_output.size(0)}')
-                #print(f'reject_input = {reject_input.size(0)}')
-                #print(f'reject_output = {reject_output.size(0)}')
-                #print(f'chosen len={chosen_input.size(0)}  reject len={reject_input.size(0)}')
-                #SFT_idx.append(chosen_input)
-                #SFT_idx.append(reject_input)
-                SFT_idx = []
-                SFT_idx = torch.cat([chosen_input.unsqueeze(0), reject_input.unsqueeze(0)], dim=0) # make batch with Chosen and Reject  
+                    SFT_idx = []
+                    SFT_idx = torch.cat([chosen_input.unsqueeze(0), reject_input.unsqueeze(0)], dim=0) # make batch with Chosen and Reject  
 
-                if args.grad_cp:
-                    RT = self(SFT_idx,checkpoint=True)
+                    if args.grad_cp:
+                        RT = self(SFT_idx,checkpoint=True)
+                    else:
+                        RT = self(SFT_idx,checkpoint=False)
+
+                    outputs_pos = RT[0].unsqueeze(0)
+                    outputs_neg = RT[1].unsqueeze(0)
+
+                    del SFT_idx
+
+                    
+
+
+                    # Calculate Chosen Loss
+                    #l2_pos_loss = F.cross_entropy(outputs_pos.view(-1, outputs_pos.size(-1)), chosen_output.view(-1))
+                    l2_pos_loss = masked_cross_entropy(outputs_pos,chosen_output,chosen_mask)
+
+
+                    pos_prob = self.compute_logps_simple_mask(chosen_output.unsqueeze(0),outputs_pos,chosen_mask.unsqueeze(0))
+                    neg_prob = self.compute_logps_simple_mask(reject_output.unsqueeze(0),outputs_neg,reject_mask.unsqueeze(0))
+
+                    # Calculate log odds
+                    orpo_ratio = (pos_prob - neg_prob) - (torch.log1p(-torch.exp(pos_prob)) - torch.log1p(-torch.exp(neg_prob)))
+                    
+                    pref_matches += (orpo_ratio > 0)
+
+                    #orpo_ratio = -F.logsigmoid(orpo_ratio)*args.orpo_alpha
+                    orpo_ratio = F.logsigmoid(orpo_ratio)
+
+                    #orpo_ratio = torch.log(orpo_ratio)
+
+                    orpo_ratio = -orpo_ratio*args.orpo_alpha
+
+
+                    if args.orpo_debug == 1:
+                        print(f'orpo_ratio={orpo_ratio}')
+                    
+                    if torch.isnan(l2_pos_loss).any():
+                        print('l2_pos_loss is NaN...')
+
+                    if torch.isnan(orpo_ratio).any():
+                        print('orpo_ratio is NaN...')
+                        orpo_ratio = torch.tensor(0.0, device=orpo_ratio.device)
+                    
+
+
+                    orpo_loss = torch.mean(((l2_pos_loss*(1.0-args.orpo_alpha))+orpo_ratio)) #maybe no need torch.mean
+                    loss1 = loss1 + l2_pos_loss
+                # if torch.isnan(orpo_loss).any():
+                #     orpo_loss = torch.tensor(0.0, device=orpo_loss.device)
+                    orpo_loss = L2Wrap.apply(orpo_loss, RT) #im not sure is this correct? outputs_pos or RT ? 
+
+                    loss2 = loss2 + orpo_loss
+                    lossorpoonly = lossorpoonly + orpo_ratio
+
                 else:
-                    RT = self(SFT_idx,checkpoint=False)
+                    #SFT Mode
+                    #print('SFT Mode')
+                    chosen_mask = (chosen_output != 0).float() 
 
-                #print(RT)
-                outputs_pos = RT[0].unsqueeze(0)
-                outputs_neg = RT[1].unsqueeze(0)
+                    SFT_idx = []
+                    SFT_idx = torch.cat([chosen_input.unsqueeze(0)], dim=0) # make batch with Chosen 
 
-                #del RT
-                del SFT_idx
-                #gc.collect()
-                #torch.cuda.empty_cache()
-                # マスクされたロス計算
-                def masked_cross_entropy(pred, target, mask):
-                    loss = F.cross_entropy(pred.view(-1, pred.size(-1)), target.view(-1), reduction='none')
-                    loss = loss * mask.view(-1)
-                    return loss.sum() / mask.sum()
+                    if args.grad_cp:
+                        RT = self(SFT_idx,checkpoint=True)
+                    else:
+                        RT = self(SFT_idx,checkpoint=False)
 
+                    outputs_pos = RT[0].unsqueeze(0)
 
-                # Calculate Chosen Loss
-                #l2_pos_loss = F.cross_entropy(outputs_pos.view(-1, outputs_pos.size(-1)), chosen_output.view(-1))
-                l2_pos_loss = masked_cross_entropy(outputs_pos,chosen_output,chosen_mask)
+                    l2_pos_loss = masked_cross_entropy(outputs_pos,chosen_output,chosen_mask)
 
-                #l2_pos_loss_temp = F.cross_entropy(outputs_pos.view(-1, outputs_pos.size(-1)), chosen_output.view(-1), reduction='none', ignore_index=0)
-                #l2_neg_loss = F.cross_entropy(outputs_neg.view(-1, outputs_neg.size(-1)), reject_output.view(-1), reduction='none', ignore_index=0)
+                    #pref_matches += (orpo_ratio > 0)
+                    if float(l2_pos_loss) < 1.5:
+                        pref_matches += (1.5-(l2_pos_loss))
+                    else:
+                        pref_matches += (1.5-(l2_pos_loss))
 
-                # Compute Probs pos and neg
-                #pos_prob = -torch.sum(l2_pos_loss_temp[-length_chosen:])
-                #del l2_pos_loss_temp
-                #neg_prob = -torch.sum(l2_neg_loss[-length_chosen:])
-                #del l2_neg_loss
+                    loss1 = loss1 + l2_pos_loss
+                    orpo_loss = l2_pos_loss
+                    orpo_loss = L2Wrap.apply(orpo_loss, RT)
+                    loss2 = loss2 + orpo_loss
+                    lossorpoonly = lossorpoonly + 0
 
 
-                #below GOMI IDEA
-                #print(f'chosen_output = {chosen_output.size(0)}')
-                #print(f'outputs_pos = {outputs_pos.size(0)}')
-                #print(f'chosen_mask = {chosen_mask}')
-                pos_prob = self.compute_logps_simple_mask(chosen_output.unsqueeze(0),outputs_pos,chosen_mask.unsqueeze(0))
-                neg_prob = self.compute_logps_simple_mask(reject_output.unsqueeze(0),outputs_neg,reject_mask.unsqueeze(0))
-
-                #print(f'pos_prob={pos_prob}')
-                #print(f'neg_prob={neg_prob}')
-
-                # Calculate log odds
-                orpo_ratio = (pos_prob - neg_prob) - (torch.log1p(-torch.exp(pos_prob)) - torch.log1p(-torch.exp(neg_prob)))
-                
-                pref_matches += (orpo_ratio > 0)
-
-                #orpo_ratio = -F.logsigmoid(orpo_ratio)*args.orpo_alpha
-                orpo_ratio = F.logsigmoid(orpo_ratio)
-
-                #orpo_ratio = torch.log(orpo_ratio)
-
-                orpo_ratio = -orpo_ratio*args.orpo_alpha
-
-
-
-                #*args.orpo_alpha
-
-
-                if args.orpo_debug == 1:
-                    print(f'orpo_ratio={orpo_ratio}')
-                
-                if torch.isnan(l2_pos_loss).any():
-                    print('l2_pos_loss is NaN...')
-
-                if torch.isnan(orpo_ratio).any():
-                    print('orpo_ratio is NaN...')
-                    orpo_ratio = torch.tensor(0.0, device=orpo_ratio.device)
-                
-
-
-                orpo_loss = torch.mean(((l2_pos_loss*(1.0-args.orpo_alpha))+orpo_ratio)) #maybe no need torch.mean
-                loss1 = loss1 + l2_pos_loss
-               # if torch.isnan(orpo_loss).any():
-               #     orpo_loss = torch.tensor(0.0, device=orpo_loss.device)
-                orpo_loss = L2Wrap.apply(orpo_loss, RT) #im not sure is this correct? outputs_pos or RT ? 
-
-                loss2 = loss2 + orpo_loss
-                lossorpoonly = lossorpoonly + orpo_ratio
 
                
             loss2 = loss2 / bsz

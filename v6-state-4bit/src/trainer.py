@@ -3,6 +3,8 @@ import torch
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 from pytorch_lightning.utilities import rank_zero_info, rank_zero_only
+import requests
+import json
 
 def my_save(args, trainer, dd, ff):
     if '14b-run1' in ff:
@@ -157,6 +159,32 @@ class train_callback(pl.Callback):
                         lll |= {"pref_percentage": trainer.pref_match_percentage, "loss_1_token_chosen": trainer.loss_1_general_or_sft, "loss_2_odds_ratio": trainer.loss_2_orpo}
                     except: pass
                 trainer.my_wandb.log(lll, step=int(real_step))
+        
+            if args.fapi_logging_callback:
+                url = args.fapi_logging_address + 'LoggingCallback'
+                data = {
+                    "step": real_step,
+                    "loss": trainer.my_loss,
+                    "loss2": trainer.loss_2_orpo,
+                    "pref": trainer.pref_match_percentage.float().mean().item(),
+                }
+
+                # ヘッダーを設定
+                headers = {
+                    "Content-Type": "application/json"
+                }
+                dummy_i = 0
+
+                try:
+                    # JSONデータをPOST
+                    response = requests.post(url, headers=headers, data=json.dumps(data))
+                    # レスポンスのステータスコードと内容を表示
+                    #print("Status Code:", response.status_code)
+                    #print("Response Content:", response.content)
+                except requests.exceptions.RequestException as e:
+                    # エラーが発生した場合はメッセージを表示
+                    #print("An error occurred:", e)
+                    dummy_i = dummy_i + 1
 
         if (trainer.is_global_zero) or ('deepspeed_stage_3' in args.strategy): # save pth
             if args.magic_prime > 0:

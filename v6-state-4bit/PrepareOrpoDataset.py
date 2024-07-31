@@ -12,11 +12,42 @@ import numpy as np
 from rwkv.utils import PIPELINE
 from rwkv.model import RWKV
 
-parser.add_argument("--load_model", default="base_model/Anarchy-RWKV-2B-68.pth", type=str)
-parser.add_argument("--input_csv", default="rlhfoutput.csv", type=str)
-parser.add_argument("--output_save", default="orpotest.save", type=str)
+parser.add_argument("--load_model", default="models/RWKV-x060-World-7B-v2.1-20240507-ctx4096.pth", type=str)
+parser.add_argument("--input_csv", default="ojousamatalkscript200.csv", type=str)
+parser.add_argument("--output_save", default="ojousama.save", type=str)
 parser.add_argument("--target_pair_count", default=10000, type=int)
+
+parser.add_argument("--fapi_logging_callback", default=1, type=int)
+parser.add_argument("--fapi_logging_callback_step", default=1000, type=int)
+parser.add_argument("--fapi_logging_address", default="http://localhost:5000/", type=str)
+
 args = parser.parse_args()
+
+import requests
+import json
+global_fapi_status = 0
+def update_fapi_status(text):
+    global args
+    global global_fapi_status
+    if args.fapi_logging_callback and global_fapi_status%args.fapi_logging_callback_step == 0:
+                url = args.fapi_logging_address + 'ProcessingCallback'
+                data = {
+                    "statusinfo": text,
+                }
+
+                # ヘッダーを設定
+                headers = {
+                    "Content-Type": "application/json"
+                }
+
+                try:
+                    # JSONデータをPOST
+                    response = requests.post(url, headers=headers, data=json.dumps(data))
+
+                except requests.exceptions.RequestException as e:
+                    # エラーが発生した場合はメッセージを表示
+                    print("An error occurred:", e)
+    global_fapi_status = global_fapi_status + 1
 
 model = RWKV(args.load_model, "cuda bf16")
 tokenizer = PIPELINE(model, "rwkv_vocab_v20230424")
@@ -34,7 +65,16 @@ with open(args.input_csv, "r",encoding='utf-8-sig', newline='') as file:
         ToRawData = {}
         prompt = row["prompt"]
         chosen = row["chosen"]
-        reject = row["reject"]
+        #reject = row["reject"]
+        # Rejectキーの存在を確認
+        if "reject" in row:
+            reject = row["reject"]
+            if reject is None:
+            	reject = ""
+        else:
+            print("Rejectキーが存在しません")
+            # 必要に応じて、デフォルト値を設定するなどの処理を行う
+            reject = ""  # または適切なデフォルト値
 
         ToRawData["prompt"] = prompt
         ToRawData["chosen"] = chosen
@@ -94,7 +134,7 @@ with open("output.jsonl", "w", encoding="utf-8") as file:
         chosen_str = chosen_str.strip().replace("\r\n", "\n").replace("\n\n", "\n")
         reject_str = reject_str.strip().replace("\r\n", "\n").replace("\n\n", "\n")
 
-
+        update_fapi_status(f'Tokenizing RLHF Dataset. No:{i}')
 
 
         h = random.random()
@@ -141,3 +181,6 @@ import torch
 # リストをランダムに入れ替える
 random.shuffle(trainset)
 torch.save(trainset, args.output_save)
+
+global_fapi_status = 0
+update_fapi_status(f'Training Started.')

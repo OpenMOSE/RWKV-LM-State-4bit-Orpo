@@ -91,6 +91,9 @@ if __name__ == "__main__":
     parser.add_argument("--rlhf_max_corpus_len", default=600, type=int) #limit maximum dpo dataset token per dpo item. if avoid OoM decrease this value
     parser.add_argument("--rlhf_train_file", default="trainset.save", type=str)#need pytorch tensor type input 
 
+    parser.add_argument("--fapi_logging_callback", default=1, type=int)
+    parser.add_argument("--fapi_logging_address", default="http://localhost:5000/", type=str)
+
 
     if pl.__version__[0]=='2':
         parser.add_argument("--accelerator", default="gpu", type=str)
@@ -287,7 +290,7 @@ if __name__ == "__main__":
         #    param.requires_grad = True
         #    print(f'grad enable {name}')
         if args.orpo:
-            if '.receptance' in name or '.key' in name or '.value' in name or '.output' in name or '.gate' in name  or 'head' in name  or 'ln_x' in name or 'ln' in name or 'time_m' in name:
+            if '.receptance' in name or '.key' in name or '.value' in name or '.output' in name or '.gate' in name  or 'head' in name  or 'emb' in name or 'ln_x' in name or 'ln' in name or 'time_m' in name:
                 param.requires_grad = False
                 print(f'grad Disabled {name}')
         else:
